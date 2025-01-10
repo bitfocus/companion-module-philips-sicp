@@ -1,5 +1,5 @@
 {
-	"name": "your-module-name",
+	"name": "philips-sicp",
 	"version": "0.1.0",
 	"main": "dist/main.js",
 	"type": "module",
@@ -23,7 +23,9 @@
 		"delay": "^6.0.0",
 		"eslint": "^8.57.0",
 		"p-queue": "^8.0.1",
-		"wake_on_lan": "^1.0.0"
+		"wake_on_lan": "^1.0.0",
+		"webpack": "^5.97.1",
+		"webpack-cli": "^6.0.1"
 	},
 	"devDependencies": {
 		"@companion-module/tools": "^1.4.2",

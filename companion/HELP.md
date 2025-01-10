@@ -9,8 +9,9 @@ but should be compatible with other displays supporting
 
 Make sure your display is connected to your LAN and has a static IP, or you have made a DHCP reservation on your router.
 
-To start the display with the module, TCP should always be available.
-Or Wake On LAN should be enabled on both the display and the module config.
+To start the display through Companion, TCP should always be available on your display. In the model I use this is done by setting the "Power save mode" to mode 3 or 4.
+
+Alternatively Wake On LAN can be used, in this case WoL should be enabled on both the display and the module config.
 
 ## Actions
 
