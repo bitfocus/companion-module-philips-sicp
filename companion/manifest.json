@@ -1,7 +1,7 @@
 {
-	"id": "philip-sicp",
-	"name": "philip-sicp",
-	"shortname": "philip sicp",
+	"id": "philips-sicp",
+	"name": "philips-sicp",
+	"shortname": "philips sicp",
 	"description": "Control a Philips display through SICP protocol",
 	"version": "0.0.0",
 	"license": "MIT",
