@@ -28,7 +28,7 @@
 		"webpack-cli": "^6.0.1"
 	},
 	"devDependencies": {
-		"@companion-module/tools": "^1.4.2",
+		"@companion-module/tools": "^1.5.2",
 		"@types/jest": "^29.5.12",
 		"@types/wake_on_lan": "^0.0.33",
 		"husky": "^9.0.10",
