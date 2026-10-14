@@ -4,7 +4,7 @@
 
 ### Breaking
 
-- Updated to `@companion-module/base` 2.1 and the Node.js 26 runtime. This version requires a Companion release that supports module API 2.x; older Companion installations keep using 1.x.
+- Updated to `@companion-module/base` 2.1 and the Node.js 26 runtime. This version requires Companion 5.0 or newer; older Companion installations keep using 1.x.
 
 ### Bug Fixes
 
