@@ -12,13 +12,15 @@
 - A display that accepts the TCP connection but stops answering is now detected and the connection is re-established.
 - Changing the IP address or port in the config now reconnects to the new address.
 - Responses split over or combined in multiple TCP packets are now handled correctly.
-- Commands sent to a group (group ID other than 0) no longer wait for a reply, as the display does not send one.
+- Commands sent to a group (group ID other than 0) are followed by a short pause, as the display does not reply to them and ignores a next message that arrives too soon.
+- Switching the display on or off no longer reports the display as not responding while it is busy starting up or shutting down.
 
 ### Features
 
 - Added volume control: volume up/down, set volume level and mute (on/off/toggle), with a mute feedback.
 - Added variables for power state, active input source, volume and mute.
 - Added presets for power, input source selection, volume and mute.
+- Added a "Debug logging" option that logs all messages sent to and received from the display.
 
 ### Chores
 

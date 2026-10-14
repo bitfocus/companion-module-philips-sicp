@@ -6,6 +6,7 @@ export type PhilipsSICPConfig = {
 	wol: boolean
 	mac: string
 	broadcast: string
+	debug: boolean
 }
 
 export function GetConfigFields(): SomeCompanionConfigField[] {
@@ -52,6 +53,14 @@ export function GetConfigFields(): SomeCompanionConfigField[] {
 			tooltip: 'WoL requests are by default sent to 255.255.255.255',
 			regex: Regex.IP,
 			isVisibleExpression: '$(options:wol)',
+		},
+		{
+			type: 'checkbox',
+			id: 'debug',
+			label: 'Debug logging',
+			width: 6,
+			default: false,
+			tooltip: 'Log every message sent to and received from the display (in the debug log of this connection)',
 		},
 	]
 }

@@ -56,6 +56,8 @@ Presets are available for power on/off/toggle, selecting each input source, volu
 
 The module polls the display every 3 seconds. When the display cannot be reached, the module retries every 5 seconds. A persisting problem is logged once, and a message is logged when the connection is restored.
 
+Enable "Debug logging" in the connection config to log every message sent to and received from the display. This is useful when reporting problems.
+
 ## Supported Devices
 
 The module has been tested with Philips 86BDL3511Q (Q-line),

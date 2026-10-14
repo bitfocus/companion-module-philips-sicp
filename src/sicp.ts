@@ -1,6 +1,7 @@
 import { InstanceStatus, TCPHelper } from '@companion-module/base'
 import wol from 'wake_on_lan'
 import PQueue from 'p-queue'
+import { setTimeout as delay } from 'node:timers/promises'
 import type { PhilipsSICPConfig } from './config.js'
 import type PhilipsSICPInstance from './main.js'
 import * as sicpcommands from './sicpcommand.js'
@@ -14,6 +15,10 @@ const RESPONSE_TIMEOUT = 1000
 const RECONNECT_INTERVAL = 5000
 /** Number of unanswered requests after which the connection is re-established */
 const MAX_MISSED_RESPONSES = 3
+/** The display may not answer for a while after switching power, during this time that is not reported as a problem */
+const POWER_SWITCH_GRACE_PERIOD = 30000
+/** Time to wait after a command the display doesn't reply to, before sending the next one */
+const GROUP_COMMAND_DELAY = 500
 const MAX_QUEUE_SIZE = 20
 
 const MAC_REGEX = /^[0-9a-fA-F]{12}$/
@@ -57,6 +62,8 @@ export class SICPClass {
 	#communicating = false
 	/** Last logged problem, used so a persisting problem is only logged once */
 	#lastError: string | undefined
+	/** Until this time unanswered requests are expected, because the display is switching power */
+	#powerSwitchingUntil = 0
 
 	constructor(self: PhilipsSICPInstance, config: PhilipsSICPConfig) {
 		this.#self = self
@@ -85,18 +92,17 @@ export class SICPClass {
 	}
 
 	async powerOn(): Promise<void> {
+		this.#powerSwitchingUntil = Date.now() + POWER_SWITCH_GRACE_PERIOD
 		if (this.#config.wol) {
 			this.#wake()
 			return
 		}
-		await this.#sendCommand(
-			'power',
-			sicpcommands.SetPowerStateRequest(true, this.groupid),
-			sicpcommands.GetPowerStateRequest(),
-		)
+		// Only send the power on command, the display needs time to start. The state is picked up by polling.
+		await this.#sendCommand('power', sicpcommands.SetPowerStateRequest(true, this.groupid))
 	}
 
 	async powerOff(): Promise<void> {
+		this.#powerSwitchingUntil = Date.now() + POWER_SWITCH_GRACE_PERIOD
 		await this.#sendCommand(
 			'power',
 			sicpcommands.SetPowerStateRequest(false, this.groupid),
@@ -170,6 +176,8 @@ export class SICPClass {
 		// TCPHelper takes care of reconnecting by itself, so a single socket is kept for the lifetime of the config
 		const socket = new TCPHelper(this.#config.host, this.#config.port, { reconnect_interval: RECONNECT_INTERVAL })
 		this.#socket = socket
+		// Send every message in its own packet, the display expects one message at a time
+		socket._socket.setNoDelay(true)
 
 		socket.on('status_change', (status, message) => {
 			this.#self.updateStatus(status, message ?? null)
@@ -186,7 +194,7 @@ export class SICPClass {
 			const message = /ECONNREFUSED/i.test(err.message)
 				? 'Network error: Could not connect to display (connection refused)'
 				: `Network error: ${err.message}`
-			this.#reportProblem('error', message)
+			this.#reportProblem('error', `${message}, retrying every ${RECONNECT_INTERVAL / 1000}s`)
 			this.#connectionLost()
 		})
 		socket.on('data', (data) => {
@@ -222,7 +230,7 @@ export class SICPClass {
 	#reportProblem(level: 'error' | 'warn', message: string): void {
 		if (this.#lastError === message) return
 		this.#lastError = message
-		this.#self.log(level, `${message}. Retrying every ${RECONNECT_INTERVAL / 1000}s, repeated messages are suppressed.`)
+		this.#self.log(level, `${message}. Repeated messages are suppressed.`)
 	}
 
 	#poll(): void {
@@ -260,13 +268,17 @@ export class SICPClass {
 		const socket = this.#socket
 		if (!socket?.isConnected) return undefined
 
-		// The display doesn't reply to commands addressed to a group (group byte other than 0)
+		this.#trace('send', request)
+
+		// The display doesn't reply to commands addressed to a group (group byte other than 0).
+		// Give it time to process the command, a next message arriving too soon makes the display ignore both.
 		if (request[2] !== 0x00) {
 			try {
 				await socket.sendAsync(Buffer.from(request))
 			} catch (e) {
 				this.#self.log('debug', `Failed to send request: ${e instanceof Error ? e.message : String(e)}`)
 			}
+			await delay(GROUP_COMMAND_DELAY)
 			return undefined
 		}
 
@@ -298,8 +310,12 @@ export class SICPClass {
 		if (this.#missedResponses < MAX_MISSED_RESPONSES) return
 
 		// The display accepted the connection but stopped answering, start over with a fresh connection
-		this.#reportProblem('warn', 'Display did not respond to requests')
-		this.#self.updateStatus(InstanceStatus.UnknownError, 'Display not responding')
+		if (Date.now() < this.#powerSwitchingUntil) {
+			this.#self.log('debug', 'Display is not answering while switching power, reconnecting')
+		} else {
+			this.#reportProblem('warn', 'Display did not respond to requests, reconnecting')
+			this.#self.updateStatus(InstanceStatus.UnknownError, 'Display not responding')
+		}
 		this.#connect()
 	}
 
@@ -318,8 +334,19 @@ export class SICPClass {
 
 			const frame = new Uint8Array(this.#receiveBuffer.subarray(0, size))
 			this.#receiveBuffer = this.#receiveBuffer.subarray(size)
+			this.#trace('received', frame)
 			this.#processFrame(frame)
 		}
+	}
+
+	#trace(prefix: string, bytes: Uint8Array): void {
+		if (!this.#config.debug) return
+		this.#self.log(
+			'debug',
+			`${prefix}: ${Buffer.from(bytes)
+				.toString('hex')
+				.replace(/(..)(?!$)/g, '$1 ')}`,
+		)
 	}
 
 	#processFrame(frame: Uint8Array): void {
