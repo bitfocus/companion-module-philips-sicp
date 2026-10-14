@@ -3,7 +3,7 @@
 This module can be used to control Philips Signage displays.
 The module has been tested with Philips 86BDL3511Q,
 but should be compatible with other displays supporting
-[SERIAL / ETHERNET INTERFACE COMMUNICATION PROTOCOL v1.99](https://www.exertis.nl/dynamic/media/1/documents/Drivers/The%20SICP%20Commands%20Document%20V1_99%2025%20May2017.pdf)
+[SERIAL / ETHERNET INTERFACE COMMUNICATION PROTOCOL v2.03](https://community.xibo.org.uk/uploads/short-url/vwVq2nPyhJKL4kTCYpa6VYhQUa8.pdf) (SICP v1.99 or later)
 
 ## Config
 
@@ -22,6 +22,14 @@ Currently the following actions are supported.
   - Off
   - Toggle
 - Set Input Source
+- Volume Up/Down (one step, for speakers, audio out or both)
+- Set Volume (0-100%, for speakers, audio out or both)
+- Mute
+  - On
+  - Off
+  - Toggle
+
+Changing only the speakers or only the audio out with Volume Up/Down requires a recent platform (Dragon 1.6, Himalaya 2.0 or newer, or updated Dragon 1.0/1.5 firmware). Mute is part of SICP v2.01 and later; displays that don't support a command log a warning when it is used.
 
 ## Feedback
 
@@ -29,6 +37,26 @@ Currently the following feedbacks are supported.
 
 - Power
 - Input Source
+- Muted
+
+## Variables
+
+- `power_state`: `true` when the display is powered on
+- `input_source`: id of the active input source (e.g. `HDMI1`)
+- `input_source_label`: name of the active input source (e.g. `HDMI 1`)
+- `volume`: speaker volume (0-100%)
+- `volume_audio_out`: audio out volume (0-100%), empty on displays without a variable audio out
+- `mute`: `true` when the audio is muted
+
+## Presets
+
+Presets are available for power on/off/toggle, selecting each input source, volume up/down and mute, including feedback.
+
+## Connection
+
+The module polls the display every 3 seconds. When the display cannot be reached, the module retries every 5 seconds. A persisting problem is logged once, and a message is logged when the connection is restored.
+
+Enable "Debug logging" in the connection config to log every message sent to and received from the display. This is useful when reporting problems.
 
 ## Supported Devices
 

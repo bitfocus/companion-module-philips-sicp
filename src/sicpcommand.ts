@@ -1,11 +1,33 @@
-/* eslint-disable @typescript-eslint/no-unused-vars */
-//const requestSICPVersion: Array<number> = [0x06, 0x01, 0x00, 0xa2, 0x00, 0xa5]
-
-import { DropdownChoice } from '@companion-module/base'
+import type { DropdownChoice } from '@companion-module/base'
 
 export const ControlByte = 0x01
 
-export const Sources: { choice: DropdownChoice; command: number }[] = [
+export const CommandCode = {
+	Ack: 0x00,
+	SetPowerState: 0x18,
+	GetPowerState: 0x19,
+	GetGroupID: 0x5d,
+	SetInputSource: 0xac,
+	GetInputSource: 0xad,
+	StepVolume: 0x41,
+	SetVolume: 0x44,
+	GetVolume: 0x45,
+	GetMute: 0x46,
+	SetMute: 0x47,
+} as const
+
+export const AckByte = 0x06
+
+export const VolumeStep = {
+	Down: 0x00,
+	Up: 0x01,
+	NoChange: 0x02,
+} as const
+export type VolumeStepValue = (typeof VolumeStep)[keyof typeof VolumeStep]
+
+export const MaxVolume = 100
+
+export const Sources: { choice: DropdownChoice<string>; command: number }[] = [
 	{ choice: { id: 'HDMI1', label: 'HDMI 1' }, command: 0x0d },
 	{ choice: { id: 'HDMI2', label: 'HDMI 2' }, command: 0x06 },
 	{ choice: { id: 'HDMI3', label: 'HDMI 3' }, command: 0x0f },
@@ -18,7 +40,8 @@ export const Sources: { choice: DropdownChoice; command: number }[] = [
 	{ choice: { id: 'DP2', label: 'Display Port 2' }, command: 0x07 },
 ]
 
-export function CompleteCommand(input: Array<number>): Uint8Array {
+export function CompleteCommand(input: number[]): Uint8Array {
+	// Message size includes the size byte itself and the checksum
 	input.unshift(input.length + 2)
 
 	let checksum = 0x00
@@ -29,58 +52,62 @@ export function CompleteCommand(input: Array<number>): Uint8Array {
 	return new Uint8Array(input)
 }
 
-export function Choices(): DropdownChoice[] {
-	const output: DropdownChoice[] = new Array<DropdownChoice>()
-	Sources.forEach((entry) => {
-		return output.push(entry.choice)
-	})
-	return output
+export function Choices(): DropdownChoice<string>[] {
+	return Sources.map((entry) => entry.choice)
 }
 
 export function SetPowerStateRequest(state: boolean, groupID: number): Uint8Array {
-	const Command: Array<number> = getBase(groupID)
-	Command.push(0x18)
-	if (state) Command.push(0x02)
-	else Command.push(0x01)
-	return CompleteCommand(Command)
+	return CompleteCommand([...getBase(groupID), CommandCode.SetPowerState, state ? 0x02 : 0x01])
 }
 
-export function SetSourceRequest(Source: string, groupID: number, OSD: any = true): Uint8Array | undefined {
-	const Command: Array<number> = getBase(groupID)
-	const command: number | undefined = Sources.find((entry) => entry.choice.id == Source)?.command
-	if (!command) return
-	Command.push(0xac)
-	Command.push(command)
-	Command.push(0x09)
-
-	if (OSD == false) Command.push(0x02)
-	else Command.push(0x01)
-
-	Command.push(0x00)
-	return CompleteCommand(Command)
+export function SetSourceRequest(source: string, groupID: number, OSD = true): Uint8Array | undefined {
+	const command = Sources.find((entry) => entry.choice.id == source)?.command
+	if (command === undefined) return
+	return CompleteCommand([...getBase(groupID), CommandCode.SetInputSource, command, 0x09, OSD ? 0x01 : 0x02, 0x00])
 }
 
 export function GetPowerStateRequest(): Uint8Array {
-	const Command: Array<number> = getBase()
-	Command.push(0x19)
-	return CompleteCommand(Command)
+	return CompleteCommand([...getBase(), CommandCode.GetPowerState])
 }
 
 export function GetGroupID(): Uint8Array {
-	const Command: Array<number> = getBase(0x00)
-	Command.push(0x5d)
-	return CompleteCommand(Command)
+	return CompleteCommand([...getBase(), CommandCode.GetGroupID])
 }
 
 export function GetInputSourceRequest(): Uint8Array {
-	const Command: Array<number> = getBase()
-	Command.push(0xad)
-	return CompleteCommand(Command)
+	return CompleteCommand([...getBase(), CommandCode.GetInputSource])
 }
 
-function getBase(groupID = 0x00): Array<number> {
-	const output: Array<number> = new Array<number>()
-	output.push(ControlByte)
-	output.push(groupID)
-	return output
+/**
+ * Set the volume of the speakers and audio out.
+ * Platforms without a variable audio out (Himalaya 1.x, Eagle) only take the speaker level.
+ */
+export function SetVolumeRequest(speaker: number, audioOut: number | undefined, groupID: number): Uint8Array {
+	const command = [...getBase(groupID), CommandCode.SetVolume, clampVolume(speaker)]
+	if (audioOut !== undefined) command.push(clampVolume(audioOut))
+	return CompleteCommand(command)
+}
+
+export function StepVolumeRequest(speaker: VolumeStepValue, audioOut: VolumeStepValue, groupID: number): Uint8Array {
+	return CompleteCommand([...getBase(groupID), CommandCode.StepVolume, speaker, audioOut])
+}
+
+export function GetVolumeRequest(): Uint8Array {
+	return CompleteCommand([...getBase(), CommandCode.GetVolume])
+}
+
+export function SetMuteRequest(mute: boolean, groupID: number): Uint8Array {
+	return CompleteCommand([...getBase(groupID), CommandCode.SetMute, mute ? 0x01 : 0x00])
+}
+
+export function GetMuteRequest(): Uint8Array {
+	return CompleteCommand([...getBase(), CommandCode.GetMute])
+}
+
+function clampVolume(level: number): number {
+	return Math.min(MaxVolume, Math.max(0, Math.round(level)))
+}
+
+function getBase(groupID = 0x00): number[] {
+	return [ControlByte, groupID]
 }

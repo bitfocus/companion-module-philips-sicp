@@ -1,7 +1,8 @@
 node_modules/
 package-lock.json
 /pkg
-/pkg.tgz
+/*.tgz
 /dist
-/.vscode
 DEBUG-*
+/.yarn
+/.vscode

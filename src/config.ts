@@ -1,11 +1,12 @@
 import { Regex, type SomeCompanionConfigField } from '@companion-module/base'
 
-export interface PhilipsSICPConfig {
+export type PhilipsSICPConfig = {
 	host: string
 	port: number
 	wol: boolean
 	mac: string
 	broadcast: string
+	debug: boolean
 }
 
 export function GetConfigFields(): SomeCompanionConfigField[] {
@@ -16,7 +17,6 @@ export function GetConfigFields(): SomeCompanionConfigField[] {
 			label: 'Target IP',
 			width: 8,
 			regex: Regex.IP,
-			required: true,
 		},
 		{
 			type: 'number',
@@ -38,25 +38,29 @@ export function GetConfigFields(): SomeCompanionConfigField[] {
 		{
 			type: 'textinput',
 			id: 'mac',
-			label: 'MAC address:',
+			label: 'MAC address',
 			width: 12,
 			default: '',
-			regex: '/^([0-9a-f]{2}([:.-]{0,1}|$)){6}$/i',
-			isVisible: (options) => {
-				return options.wol === true
-			},
+			regex: '/^([0-9a-f]{2}([:.-]?|$)){6}$/i',
+			isVisibleExpression: '$(options:wol)',
 		},
 		{
 			type: 'textinput',
 			id: 'broadcast',
-			label: 'Broadcast ip',
+			label: 'Broadcast IP',
 			width: 12,
 			default: '255.255.255.255',
-			tooltip: 'WoL request are by default send to 255.255.255.255',
+			tooltip: 'WoL requests are by default sent to 255.255.255.255',
 			regex: Regex.IP,
-			isVisible: (options) => {
-				return options.wol === true
-			},
+			isVisibleExpression: '$(options:wol)',
+		},
+		{
+			type: 'checkbox',
+			id: 'debug',
+			label: 'Debug logging',
+			width: 6,
+			default: false,
+			tooltip: 'Log every message sent to and received from the display (in the debug log of this connection)',
 		},
 	]
 }
