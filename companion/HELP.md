@@ -30,6 +30,20 @@ Currently the following feedbacks are supported.
 - Power
 - Input Source
 
+## Variables
+
+- `power_state`: `true` when the display is powered on
+- `input_source`: id of the active input source (e.g. `HDMI1`)
+- `input_source_label`: name of the active input source (e.g. `HDMI 1`)
+
+## Presets
+
+Presets are available for power on/off/toggle and for selecting each input source, including feedback.
+
+## Connection
+
+The module polls the display every 3 seconds. When the display cannot be reached, the module retries every 5 seconds. A persisting problem is logged once, and a message is logged when the connection is restored.
+
 ## Supported Devices
 
 The module has been tested with Philips 86BDL3511Q (Q-line),

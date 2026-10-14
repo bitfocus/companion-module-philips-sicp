@@ -1,352 +1,312 @@
-import { DropdownChoiceId, InstanceStatus, TCPHelper } from '@companion-module/base'
-import { PhilipsSICPConfig } from './config.js'
+import { InstanceStatus, TCPHelper } from '@companion-module/base'
 import wol from 'wake_on_lan'
-import { PhilipsSICPInstance } from './main.js'
+import PQueue from 'p-queue'
+import type { PhilipsSICPConfig } from './config.js'
+import type PhilipsSICPInstance from './main.js'
 import * as sicpcommands from './sicpcommand.js'
-import { FeedbackID } from './feedbacks.js'
-import pQueue from 'p-queue'
-import delay from 'delay'
+import { AckByte, CommandCode } from './sicpcommand.js'
+
+/** Interval for polling power state and input source */
+const POLL_INTERVAL = 3000
+/** Time to wait for the display to answer a request */
+const RESPONSE_TIMEOUT = 1000
+/** Time between reconnection attempts when the display can't be reached */
+const RECONNECT_INTERVAL = 5000
+/** Number of unanswered requests after which the connection is re-established */
+const MAX_MISSED_RESPONSES = 3
+const MAX_QUEUE_SIZE = 20
+
+const MAC_REGEX = /^[0-9a-fA-F]{12}$/
+
+export interface SICPState {
+	PowerState: boolean
+	InputSource: string | undefined
+}
 
 export class SICPClass {
-	socket: TCPHelper | undefined
-	regex_mac = new RegExp(/^[0-9a-fA-F]{12}$/)
-	subscriptions = new Array<{ id: string; count: number }>()
-	private pollTimer: NodeJS.Timeout | undefined
-	#testMode = true
-	private pollTime = 600
-	private reconnectionPoll: NodeJS.Timeout | undefined
-
-	TCPqueue: pQueue | undefined
-
-	socketStatus = new socketStatus()
-
-	#config: PhilipsSICPConfig = {
-		host: '',
-		port: 5000,
-		wol: false,
-		mac: '',
-		broadcast: '255.255.255.255',
-	}
-
-	state: SICPStatus = {
+	readonly state: SICPState = {
 		PowerState: false,
-		ToggleNext: false,
-	}
-
-	private _groupid = 0x00
-
-	public get groupid(): number {
-		if (this._groupid) return this._groupid
-		return 0x00
+		InputSource: undefined,
 	}
 
 	#self: PhilipsSICPInstance
+	#config: PhilipsSICPConfig
+	#socket: TCPHelper | undefined
+	#queue = new PQueue({ concurrency: 1 })
+	#pollTimer: NodeJS.Timeout | undefined
+	#receiveBuffer = Buffer.alloc(0)
+	#pendingResponse: ((frame: Uint8Array | undefined) => void) | undefined
+	/** Incremented on every (re)connect, so queued requests for an old connection are dropped */
+	#generation = 0
+	#missedResponses = 0
+	#groupId = 0x00
+	/** True when the display has answered since the last (re)connect */
+	#communicating = false
+	/** Last logged problem, used so a persisting problem is only logged once */
+	#lastError: string | undefined
 
-	constructor(self: PhilipsSICPInstance) {
-		this.#config = self.config
+	constructor(self: PhilipsSICPInstance, config: PhilipsSICPConfig) {
 		this.#self = self
-		if (this.#testMode) this.pollTime = 3000
-		this.init_tcp()
-		this.init_tcpqueue()
+		this.#config = { ...config }
+		this.#connect()
+		this.#pollTimer = setInterval(() => this.#poll(), POLL_INTERVAL)
 	}
 
-	init_tcpqueue(): void {
-		this.TCPqueue = new pQueue({
-			concurrency: 1,
-			timeout: 600,
-			autoStart: true,
-		})
-
-		if (!this.pollTimer)
-			this.pollTimer = setInterval(() => {
-				void this.PollFeedback()
-			}, this.pollTime)
-
-		this.TCPqueue?.on('add', () => {
-			if (this.TCPqueue && this.TCPqueue?.size > 20) {
-				this.TCPqueue?.clear()
-				this.#self.log('warn', 'Queue overflowed and was emptied!')
-			}
-		})
-		setTimeout(() => {
-			this.AddToQueue(sicpcommands.GetGroupID())
-		}, 500)
-	}
-
-	init_tcp(): void {
-		this.#self.updateStatus(InstanceStatus.Connecting)
-		this.socket = new TCPHelper(this.#config.host, this.#config.port)
-		this.socket._socket.setTimeout(500, () => {
-			if (this.socketStatus.InConnection) {
-				this.socketStatus.InConnection = false
-				this.socket?._socket.removeAllListeners()
-				this.socketStatus.Initialized = false
-				this.#self.updateStatus(InstanceStatus.Disconnected)
-				this.socket?.destroy()
-				this.init_tcp()
-				this.#self.log('warn', 'Connection timed out! Display did not respond.')
-			}
-		})
-
-		this.socket.on('status_change', (status, message) => {
-			this.socketStatus.StatusCode = status
-			if (message != undefined) this.#self.log('debug', message)
-		})
-
-		this.socket.on('error', (err) => {
-			this.state.PowerState = false
-			this.#self.checkFeedbacks()
-			this.processTcpError(err)
-		})
-
-		this.socket.on('data', (data) => {
-			const dataArray = new Uint8Array(data)
-			this.process_data(dataArray)
-			this.#self.log('debug', 'State: ' + this.state.PowerState)
-		})
-
-		this.socketStatus.Initialized = this.socket.connect()
-		if (this.socketStatus.Initialized && this.socket.isConnected) {
-			this.stopReconnectionPoll()
-			this.#self.updateStatus(InstanceStatus.Ok)
-		}
-	}
-
-	AddSubscription(FeedbackID: string): void {
-		const subElement = this.subscriptions.find((element) => element.id == FeedbackID)
-		if (!subElement) {
-			this.subscriptions.push({ id: FeedbackID, count: 1 })
-			this.#self.log('info', 'Added subscription: ' + FeedbackID)
-		} else subElement.count++
-	}
-
-	RemoveSubscription(FeedbackID: string): void {
-		this.#self.log('debug', 'unsubscribe ' + FeedbackID)
-		const subElement = this.subscriptions.find((element) => element.id == FeedbackID)
-		if (subElement && subElement.count > 1) subElement.count--
-		else if (subElement) {
-			const index = this.subscriptions.indexOf(subElement)
-			if (index > -1) {
-				this.subscriptions.splice(index, 1)
-			}
-			this.#self.log('info', 'Removed subscription: ' + FeedbackID)
-		}
-	}
-
-	async PollFeedback(): Promise<void> {
-		this.subscriptions.forEach((t) => {
-			switch (t.id) {
-				case FeedbackID.PowerState: {
-					this.AddToQueue(sicpcommands.GetPowerStateRequest())
-					break
-				}
-				case FeedbackID.InputSource: {
-					this.AddToQueue(sicpcommands.GetInputSourceRequest())
-					break
-				}
-				default:
-					break
-			}
-		})
-	}
-
-	process_data(data: Uint8Array): void {
-		this.printCommand(data, 'received: ')
-		this.socketStatus.InConnection = false
-		if (data[3] != 0x00) this.socketStatus.LastRequestSucces = true
-
-		switch (data[3]) {
-			case 0x19: {
-				if (data[4] == 0x02) this.state.PowerState = true
-				else this.state.PowerState = false
-				if (this.#testMode) this.#self.log('debug', 'ToggleNext: ' + this.state.ToggleNext)
-				if (this.state.ToggleNext) {
-					this.state.ToggleNext = false
-					if (!this.state.PowerState) {
-						this.sendTurnOn()
-						break
-					} else this.AddToQueue(sicpcommands.SetPowerStateRequest(false, this.groupid))
-				}
-				break
-			}
-			case 0xad: {
-				this.state.InputSource = sicpcommands.Sources.find((t) => t.command == data[4])?.choice.id
-				break
-			}
-			case 0x00: {
-				if (data[4] == 0x06) this.socketStatus.LastRequestSucces = true
-				else this.socketStatus.LastRequestSucces = false
-				break
-			}
-			case 0x5d: {
-				if (data[0] == 0x06) this._groupid = data[4]
-				break
-			}
-			default:
-		}
-
-		this.#self.checkFeedbacks()
-	}
-
-	processTcpError(error: Error): void {
-		let tryReconnect = false
-		this.TCPqueue?.pause()
-		this.TCPqueue = undefined
-		if (error.message.match(/(ECONNREFUSED)/i)) {
-			tryReconnect = true
-			this.#self.updateStatus(InstanceStatus.ConnectionFailure)
-			this.#self.log('error', 'Network error: Could not connect to display')
-		} else {
-			tryReconnect = false
-			this.#self.updateStatus(InstanceStatus.UnknownError)
-		}
-
-		if (tryReconnect) this.startReconnectionPoll()
-		else this.stopReconnectionPoll()
-		this.#self.log('debug', 'Network error ' + error)
+	get groupid(): number {
+		return this.#groupId
 	}
 
 	updateConfig(config: PhilipsSICPConfig): void {
-		this.#self.log('debug', 'Config has changed')
-		if (JSON.stringify(config) !== JSON.stringify(this.#config)) {
-			this.#config = config
-			if (this.#config.host != config.host || this.#config.port != config.port) {
-				this.socket?.destroy()
-				this.init_tcp()
-			}
-		}
-		setTimeout(() => {
-			this.AddToQueue(sicpcommands.GetGroupID())
-		}, 500)
-	}
-
-	sendTurnOn(): void {
-		if (!this.#config.wol) this.AddToQueue(sicpcommands.SetPowerStateRequest(true, this.groupid))
-		else {
-			const macAdd: string = this.#config.mac.replace(/[:.-]/g, '')
-			const options: wol.WakeOptions = {
-				port: 9,
-				address: this.#config.broadcast,
-				num_packets: 5,
-				interval: 100,
-			}
-			if (this.regex_mac.test(macAdd)) {
-				wol.wake(macAdd, options)
-				this.#self.log('debug', 'mac: ' + macAdd)
-			}
-			setTimeout(() => {
-				this.AddToQueue(sicpcommands.GetPowerStateRequest())
-			}, 500)
-		}
-	}
-
-	AddToQueue(SICPrequest: Uint8Array | Array<Uint8Array> | undefined): void {
-		if (!this.socketStatus.Initialized) return
-		if (SICPrequest instanceof Uint8Array) {
-			this.SingleToQueue(SICPrequest)
-		} else if (SICPrequest instanceof Array) {
-			SICPrequest.forEach((instance) => {
-				if (instance instanceof Uint8Array) this.SingleToQueue(instance)
-			})
-		}
-	}
-
-	private SingleToQueue(SICPrequest: Uint8Array): void {
-		try {
-			void this.TCPqueue?.add(async () => {
-				const success = await this.sendCommand(SICPrequest)
-				if (this.#testMode) {
-					this.#self.log('debug', 'IsSend:' + String(success))
-				}
-			})
-		} catch (error) {
-			this.#self.log('warn', 'cannot send')
-		}
-	}
-
-	async sendCommand(SICPrequest: Uint8Array): Promise<boolean> {
-		const buffer = Buffer.from(SICPrequest)
-		this.socketStatus.LastRequest = SICPrequest
-		if (this.#testMode) this.#self.log('debug', 'InConnection: ' + this.socketStatus.InConnection)
-
-		if (!this.socket || this.socket.isDestroyed) return false
-		if (this.socket && !this.socket?.isConnected) this.socket.connect()
-
-		for (let i = 0; i < 100; i++) {
-			if (!this.socketStatus.InConnection || !this.socketStatus.Initialized) break
-			await delay(10)
-		}
-
-		if (this.socket && !this.socketStatus.InConnection) {
-			this.socketStatus.InConnection = true
-			this.printCommand(SICPrequest, 'send: ')
-			return this.socket.send(buffer)
-		} else
-			return new Promise(() => {
-				return false
-			})
-	}
-
-	printCommand(request: Uint8Array, prefix = ''): void {
-		if (this.#testMode) {
-			let output = prefix
-			request.forEach((n) => {
-				output += n.toString(16) + ':'
-			})
-			this.#self.log('debug', output)
-		}
-	}
-
-	//Polls
-	startReconnectionPoll(): void {
-		this.stopReconnectionPoll()
-		this.reconnectionPoll = setInterval(() => {
-			this.init_tcp()
-			this.init_tcpqueue()
-		}, 5000)
-	}
-
-	stopReconnectionPoll(): void {
-		if (this.reconnectionPoll) {
-			clearInterval(this.reconnectionPoll)
-			delete this.reconnectionPoll
+		const reconnect = config.host !== this.#config.host || config.port !== this.#config.port
+		this.#config = { ...config }
+		if (reconnect) {
+			this.#lastError = undefined
+			this.#connect()
 		}
 	}
 
 	destroy(): void {
-		this.TCPqueue?.clear()
-		this.socket?.destroy()
+		if (this.#pollTimer) clearInterval(this.#pollTimer)
+		this.#pollTimer = undefined
+		this.#disconnect()
 	}
-}
 
-interface SICPStatus {
-	PowerState: boolean
-	ToggleNext: boolean
-	InputSource?: DropdownChoiceId | undefined
-}
+	async powerOn(): Promise<void> {
+		if (this.#config.wol) {
+			this.#wake()
+			return
+		}
+		await this.#sendAll(sicpcommands.SetPowerStateRequest(true, this.groupid), sicpcommands.GetPowerStateRequest())
+	}
 
-class socketStatus {
-	Initialized = false
-	private _InConnection = false
-	StatusCode = 'Not Initialized'
-	LastRequest?: Uint8Array | undefined
-	LastRequestSucces?: boolean
+	async powerOff(): Promise<void> {
+		await this.#sendAll(sicpcommands.SetPowerStateRequest(false, this.groupid), sicpcommands.GetPowerStateRequest())
+	}
 
-	ConnectionTimer: NodeJS.Timeout | undefined
+	async togglePower(): Promise<void> {
+		// Refresh the power state first, when the display can't be reached it is considered off
+		await this.#send(sicpcommands.GetPowerStateRequest())
+		if (this.state.PowerState) await this.powerOff()
+		else await this.powerOn()
+	}
 
-	public set InConnection(_state: boolean) {
-		if (_state) {
-			this.ConnectionTimer = setTimeout(() => {
-				this._InConnection = false
-			}, 500)
-			if (!this._InConnection) this._InConnection = true
-		} else {
-			this.ConnectionTimer = undefined
-			this._InConnection = false
+	async setSource(source: string, showOSD: boolean): Promise<void> {
+		const request = sicpcommands.SetSourceRequest(source, this.groupid, showOSD)
+		if (!request) {
+			this.#self.log('warn', `Unknown input source: ${source}`)
+			return
+		}
+		await this.#sendAll(request, sicpcommands.GetInputSourceRequest())
+	}
+
+	#connect(): void {
+		this.#disconnect()
+
+		if (!this.#config.host) {
+			this.#self.updateStatus(InstanceStatus.BadConfig, 'No host configured')
+			return
+		}
+
+		this.#self.updateStatus(InstanceStatus.Connecting)
+
+		// TCPHelper takes care of reconnecting by itself, so a single socket is kept for the lifetime of the config
+		const socket = new TCPHelper(this.#config.host, this.#config.port, { reconnect_interval: RECONNECT_INTERVAL })
+		this.#socket = socket
+
+		socket.on('status_change', (status, message) => {
+			this.#self.updateStatus(status, message ?? null)
+		})
+		socket.on('connect', () => {
+			this.#resetConnectionState()
+			void this.#send(sicpcommands.GetGroupID())
+			this.#poll()
+		})
+		socket.on('end', () => {
+			this.#connectionLost()
+		})
+		socket.on('error', (err) => {
+			const message = /ECONNREFUSED/i.test(err.message)
+				? 'Network error: Could not connect to display (connection refused)'
+				: `Network error: ${err.message}`
+			this.#reportProblem('error', message)
+			this.#connectionLost()
+		})
+		socket.on('data', (data) => {
+			this.#receive(data)
+		})
+	}
+
+	#disconnect(): void {
+		this.#socket?.destroy()
+		this.#socket = undefined
+		this.#connectionLost()
+	}
+
+	#resetConnectionState(): void {
+		this.#generation++
+		this.#queue.clear()
+		this.#receiveBuffer = Buffer.alloc(0)
+		this.#missedResponses = 0
+		this.#communicating = false
+		this.#pendingResponse?.(undefined)
+	}
+
+	#connectionLost(): void {
+		this.#resetConnectionState()
+		this.#updateState({ PowerState: false, InputSource: undefined })
+	}
+
+	/**
+	 * Log a problem, but only when it differs from the previously logged one.
+	 * The display can be unreachable for days (e.g. when it is in deep standby),
+	 * so logging every reconnection attempt would flood the log.
+	 */
+	#reportProblem(level: 'error' | 'warn', message: string): void {
+		if (this.#lastError === message) return
+		this.#lastError = message
+		this.#self.log(level, `${message}. Retrying every ${RECONNECT_INTERVAL / 1000}s, repeated messages are suppressed.`)
+	}
+
+	#poll(): void {
+		if (!this.#socket?.isConnected || this.#queue.size > 0) return
+		void this.#send(sicpcommands.GetPowerStateRequest())
+		void this.#send(sicpcommands.GetInputSourceRequest())
+	}
+
+	async #sendAll(...requests: Uint8Array[]): Promise<void> {
+		await Promise.all(requests.map(async (request) => this.#send(request)))
+	}
+
+	/** Queue a request, resolves with the response of the display or undefined when there was none */
+	async #send(request: Uint8Array): Promise<Uint8Array | undefined> {
+		if (!this.#socket?.isConnected) return undefined
+		if (this.#queue.size >= MAX_QUEUE_SIZE) {
+			this.#self.log('warn', 'Too many pending requests, request was dropped')
+			return undefined
+		}
+
+		const generation = this.#generation
+		return this.#queue.add(async () => {
+			if (generation !== this.#generation) return undefined
+			return this.#transmit(request)
+		})
+	}
+
+	async #transmit(request: Uint8Array): Promise<Uint8Array | undefined> {
+		const socket = this.#socket
+		if (!socket?.isConnected) return undefined
+
+		const response = new Promise<Uint8Array | undefined>((resolve) => {
+			const done = (frame: Uint8Array | undefined) => {
+				clearTimeout(timer)
+				if (this.#pendingResponse === done) this.#pendingResponse = undefined
+				resolve(frame)
+			}
+			const timer = setTimeout(() => done(undefined), RESPONSE_TIMEOUT)
+			this.#pendingResponse = done
+		})
+
+		try {
+			await socket.sendAsync(Buffer.from(request))
+		} catch (e) {
+			this.#pendingResponse?.(undefined)
+			this.#self.log('debug', `Failed to send request: ${e instanceof Error ? e.message : String(e)}`)
+			return undefined
+		}
+
+		const frame = await response
+		if (!frame && socket === this.#socket && socket.isConnected) this.#missedResponse()
+		return frame
+	}
+
+	#missedResponse(): void {
+		this.#missedResponses++
+		if (this.#missedResponses < MAX_MISSED_RESPONSES) return
+
+		// The display accepted the connection but stopped answering, start over with a fresh connection
+		this.#reportProblem('warn', 'Display did not respond to requests')
+		this.#self.updateStatus(InstanceStatus.UnknownError, 'Display not responding')
+		this.#connect()
+	}
+
+	#receive(data: Buffer): void {
+		this.#receiveBuffer = Buffer.concat([this.#receiveBuffer, data])
+
+		// Every SICP message starts with its total size
+		while (this.#receiveBuffer.length > 0) {
+			const size = this.#receiveBuffer[0]
+			if (size < 5) {
+				this.#self.log('debug', 'Received invalid data, discarding it')
+				this.#receiveBuffer = Buffer.alloc(0)
+				break
+			}
+			if (this.#receiveBuffer.length < size) break
+
+			const frame = new Uint8Array(this.#receiveBuffer.subarray(0, size))
+			this.#receiveBuffer = this.#receiveBuffer.subarray(size)
+			this.#processFrame(frame)
 		}
 	}
 
-	public get InConnection() {
-		return this._InConnection
+	#processFrame(frame: Uint8Array): void {
+		this.#missedResponses = 0
+		if (!this.#communicating) {
+			this.#communicating = true
+			if (this.#lastError !== undefined) this.#self.log('info', 'Connection to display restored')
+			this.#lastError = undefined
+			this.#self.updateStatus(InstanceStatus.Ok)
+		}
+
+		switch (frame[3]) {
+			case CommandCode.GetPowerState: {
+				this.#updateState({ PowerState: frame[4] === 0x02 })
+				break
+			}
+			case CommandCode.GetInputSource: {
+				this.#updateState({ InputSource: sicpcommands.Sources.find((t) => t.command === frame[4])?.choice.id })
+				break
+			}
+			case CommandCode.Ack: {
+				if (frame[4] !== AckByte) this.#self.log('debug', 'Display did not accept the last command')
+				break
+			}
+			case CommandCode.GetGroupID: {
+				if (frame[0] === 0x06) this.#groupId = frame[4]
+				break
+			}
+			default:
+				break
+		}
+
+		this.#pendingResponse?.(frame)
+	}
+
+	#updateState(newState: Partial<SICPState>): void {
+		let changed = false
+		for (const key of Object.keys(newState) as (keyof SICPState)[]) {
+			if (this.state[key] !== newState[key]) {
+				Object.assign(this.state, { [key]: newState[key] })
+				changed = true
+			}
+		}
+		if (changed) this.#self.stateChanged()
+	}
+
+	#wake(): void {
+		const mac = this.#config.mac.replace(/[:.-]/g, '')
+		if (!MAC_REGEX.test(mac)) {
+			this.#self.log('warn', 'Cannot send WoL packet, the configured MAC address is invalid')
+			return
+		}
+
+		const options: wol.WakeOptions = {
+			port: 9,
+			address: this.#config.broadcast || '255.255.255.255',
+			num_packets: 5,
+			interval: 100,
+		}
+		wol.wake(mac, options, (err: Error | null | undefined) => {
+			if (err) this.#self.log('warn', `Failed to send WoL packet: ${err.message}`)
+		})
 	}
 }

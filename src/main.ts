@@ -1,14 +1,25 @@
-import { InstanceBase, runEntrypoint, InstanceStatus, SomeCompanionConfigField } from '@companion-module/base'
+import { InstanceBase, type SomeCompanionConfigField } from '@companion-module/base'
 import { GetConfigFields, type PhilipsSICPConfig } from './config.js'
-import { UpdateVariableDefinitions } from './variables.js'
+import { UpdateVariableDefinitions, UpdateVariableValues, type VariablesSchema } from './variables.js'
 import { UpgradeScripts } from './upgrades.js'
-import { UpdateActions } from './actions.js'
-import { UpdateFeedbacks } from './feedbacks.js'
+import { UpdateActions, type ActionsSchema } from './actions.js'
+import { FeedbackID, UpdateFeedbacks, type FeedbacksSchema } from './feedbacks.js'
+import { UpdatePresets } from './presets.js'
 import { SICPClass } from './sicp.js'
 
-export class PhilipsSICPInstance extends InstanceBase<PhilipsSICPConfig> {
+export type ModuleSchema = {
+	config: PhilipsSICPConfig
+	secrets: undefined
+	actions: ActionsSchema
+	feedbacks: FeedbacksSchema
+	variables: VariablesSchema
+}
+
+export { UpgradeScripts }
+
+export default class PhilipsSICPInstance extends InstanceBase<ModuleSchema> {
 	config!: PhilipsSICPConfig // Setup in init()
-	SICP!: SICPClass
+	SICP!: SICPClass // Setup in init()
 
 	constructor(internal: unknown) {
 		super(internal)
@@ -16,17 +27,19 @@ export class PhilipsSICPInstance extends InstanceBase<PhilipsSICPConfig> {
 
 	async init(config: PhilipsSICPConfig): Promise<void> {
 		this.config = config
-		this.SICP = new SICPClass(this)
-		this.updateStatus(InstanceStatus.Ok)
 
 		this.updateActions() // export actions
 		this.updateFeedbacks() // export feedbacks
+		this.updatePresets() // export presets
 		this.updateVariableDefinitions() // export variable definitions
+
+		this.SICP = new SICPClass(this, config)
+		this.stateChanged()
 	}
 	// When module gets deleted
 	async destroy(): Promise<void> {
 		this.log('debug', 'destroy')
-		this.SICP.destroy()
+		this.SICP?.destroy()
 	}
 
 	async configUpdated(config: PhilipsSICPConfig): Promise<void> {
@@ -39,6 +52,13 @@ export class PhilipsSICPInstance extends InstanceBase<PhilipsSICPConfig> {
 		return GetConfigFields()
 	}
 
+	/** Called by the SICP connection whenever the known display state changes */
+	stateChanged(): void {
+		if (!this.SICP) return
+		this.checkFeedbacks(FeedbackID.PowerState, FeedbackID.InputSource)
+		UpdateVariableValues(this)
+	}
+
 	updateActions(): void {
 		UpdateActions(this)
 	}
@@ -47,9 +67,11 @@ export class PhilipsSICPInstance extends InstanceBase<PhilipsSICPConfig> {
 		UpdateFeedbacks(this)
 	}
 
+	updatePresets(): void {
+		UpdatePresets(this)
+	}
+
 	updateVariableDefinitions(): void {
 		UpdateVariableDefinitions(this)
 	}
 }
-
-runEntrypoint(PhilipsSICPInstance, UpgradeScripts)

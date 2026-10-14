@@ -1,16 +1,24 @@
-import type { PhilipsSICPInstance } from './main.js'
-import {
-	Choices,
-	Sources,
-	SetPowerStateRequest,
-	SetSourceRequest,
-	GetPowerStateRequest,
-	GetInputSourceRequest,
-} from './sicpcommand.js'
+import type PhilipsSICPInstance from './main.js'
+import { Choices, Sources } from './sicpcommand.js'
 
 export enum ActionID {
 	Power = 'power',
-	Set_Source = 'set_source',
+	// Kept with this casing, as existing buttons reference the action by this id
+	Set_Source = 'Set_Source',
+}
+
+export type ActionsSchema = {
+	[ActionID.Power]: {
+		options: {
+			state: 'on' | 'off' | 'toggle'
+		}
+	}
+	[ActionID.Set_Source]: {
+		options: {
+			source: string
+			OSD: boolean
+		}
+	}
 }
 
 export function UpdateActions(self: PhilipsSICPInstance): void {
@@ -30,25 +38,21 @@ export function UpdateActions(self: PhilipsSICPInstance): void {
 					default: 'on',
 				},
 			],
-			callback: async (info) => {
-				switch (info.options.state?.toString()) {
-					case 'on': {
-						self.SICP.sendTurnOn()
+			callback: async (action) => {
+				switch (action.options.state) {
+					case 'on':
+						await self.SICP.powerOn()
 						break
-					}
-					case 'off': {
-						self.SICP.AddToQueue([SetPowerStateRequest(false, self.SICP.groupid), GetPowerStateRequest()])
+					case 'off':
+						await self.SICP.powerOff()
 						break
-					}
-					case 'toggle': {
-						self.SICP.state.ToggleNext = true
-						self.SICP.AddToQueue(GetPowerStateRequest())
+					case 'toggle':
+						await self.SICP.togglePower()
 						break
-					}
 				}
 			},
 		},
-		Set_Source: {
+		[ActionID.Set_Source]: {
 			name: 'Set Source',
 			options: [
 				{
@@ -65,12 +69,9 @@ export function UpdateActions(self: PhilipsSICPInstance): void {
 					default: true,
 				},
 			],
-			callback: async (event) => {
-				const source = event.options.source?.toString()
-				if (source) {
-					const request = SetSourceRequest(source, self.SICP.groupid, event.options.OSD?.valueOf())
-					if (source && request) self.SICP.AddToQueue([request, GetInputSourceRequest()])
-				}
+			callback: async (action) => {
+				if (!action.options.source) return
+				await self.SICP.setSource(String(action.options.source), action.options.OSD !== false)
 			},
 		},
 	})

@@ -1,10 +1,22 @@
-import { combineRgb } from '@companion-module/base'
-import type { PhilipsSICPInstance } from './main.js'
+import type PhilipsSICPInstance from './main.js'
 import { Choices, Sources } from './sicpcommand.js'
 
 export enum FeedbackID {
 	PowerState = 'powerstate',
 	InputSource = 'inputsource',
+}
+
+export type FeedbacksSchema = {
+	[FeedbackID.PowerState]: {
+		type: 'boolean'
+		options: Record<string, never>
+	}
+	[FeedbackID.InputSource]: {
+		type: 'boolean'
+		options: {
+			source: string
+		}
+	}
 }
 
 export function UpdateFeedbacks(self: PhilipsSICPInstance): void {
@@ -13,16 +25,10 @@ export function UpdateFeedbacks(self: PhilipsSICPInstance): void {
 			name: 'Display On',
 			type: 'boolean',
 			defaultStyle: {
-				bgcolor: combineRgb(0, 255, 0),
-				color: combineRgb(0, 0, 0),
+				bgcolor: 0x00ff00,
+				color: 0x000000,
 			},
 			options: [],
-			subscribe: (info) => {
-				self.SICP.AddSubscription(info.feedbackId)
-			},
-			unsubscribe: (info) => {
-				self.SICP.RemoveSubscription(info.feedbackId)
-			},
 			callback: () => {
 				return self.SICP.state.PowerState
 			},
@@ -31,8 +37,8 @@ export function UpdateFeedbacks(self: PhilipsSICPInstance): void {
 			name: 'Active Input Source',
 			type: 'boolean',
 			defaultStyle: {
-				bgcolor: combineRgb(0, 255, 0),
-				color: combineRgb(0, 0, 0),
+				bgcolor: 0x00ff00,
+				color: 0x000000,
 			},
 			options: [
 				{
@@ -43,14 +49,8 @@ export function UpdateFeedbacks(self: PhilipsSICPInstance): void {
 					default: Sources[0].choice.id,
 				},
 			],
-			subscribe: (info) => {
-				self.SICP.AddSubscription(info.feedbackId)
-			},
-			unsubscribe: (info) => {
-				self.SICP.RemoveSubscription(info.feedbackId)
-			},
-			callback: (info) => {
-				return self.SICP.state.InputSource?.toString() == info.options.source?.toString()
+			callback: (feedback) => {
+				return self.SICP.state.InputSource !== undefined && self.SICP.state.InputSource == feedback.options.source
 			},
 		},
 	})
