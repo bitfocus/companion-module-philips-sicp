@@ -10,6 +10,7 @@
 
 - Fixed the connection retrying every 2 seconds and flooding the log with `Network error: Could not connect to display` when a display was unreachable for a longer time ([#5](https://github.com/bitfocus/companion-module-philips-sicp/issues/5)). The module now keeps a single connection, retries every 5 seconds and logs a persisting problem only once, plus a message when the connection is restored.
 - A display that accepts the TCP connection but stops answering is now detected and the connection is re-established.
+- Status requests a display does not answer (for example volume while in standby) no longer cause a reconnect, and are only retried once in a while.
 - Changing the IP address or port in the config now reconnects to the new address.
 - Responses split over or combined in multiple TCP packets are now handled correctly.
 - Commands sent to a group (group ID other than 0) are followed by a short pause, as the display does not reply to them and ignores a next message that arrives too soon.

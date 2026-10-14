@@ -13,8 +13,12 @@ const POLL_INTERVAL = 3000
 const RESPONSE_TIMEOUT = 1000
 /** Time between reconnection attempts when the display can't be reached */
 const RECONNECT_INTERVAL = 5000
-/** Number of unanswered requests after which the connection is re-established */
-const MAX_MISSED_RESPONSES = 3
+/** When the display hasn't answered anything for this long, the connection is re-established */
+const NO_RESPONSE_TIMEOUT = 10000
+/** A status request that went unanswered this many times in a row is only polled occasionally */
+const MAX_UNANSWERED_QUERIES = 3
+/** Unanswered status requests are retried every this many polls (e.g. volume while in standby) */
+const UNANSWERED_QUERY_RETRY_POLLS = 10
 /** The display may not answer for a while after switching power, during this time that is not reported as a problem */
 const POWER_SWITCH_GRACE_PERIOD = 30000
 /** Time to wait after a command the display doesn't reply to, before sending the next one */
@@ -56,7 +60,11 @@ export class SICPClass {
 	#pendingResponse: ((frame: Uint8Array | undefined) => void) | undefined
 	/** Incremented on every (re)connect, so queued requests for an old connection are dropped */
 	#generation = 0
-	#missedResponses = 0
+	/** Time of the last message received from the display, or of the last (re)connect */
+	#lastResponseAt = 0
+	/** Per status request command code, the number of times in a row it went unanswered or was rejected */
+	#unansweredQueries = new Map<number, number>()
+	#pollCount = 0
 	#groupId = 0x00
 	/** True when the display has answered since the last (re)connect */
 	#communicating = false
@@ -212,7 +220,8 @@ export class SICPClass {
 		this.#generation++
 		this.#queue.clear()
 		this.#receiveBuffer = Buffer.alloc(0)
-		this.#missedResponses = 0
+		this.#lastResponseAt = Date.now()
+		this.#unansweredQueries.clear()
 		this.#communicating = false
 		this.#pendingResponse?.(undefined)
 	}
@@ -235,10 +244,20 @@ export class SICPClass {
 
 	#poll(): void {
 		if (!this.#socket?.isConnected || this.#queue.size > 0) return
-		void this.#send(sicpcommands.GetPowerStateRequest())
-		void this.#send(sicpcommands.GetInputSourceRequest())
-		void this.#send(sicpcommands.GetVolumeRequest())
-		void this.#send(sicpcommands.GetMuteRequest())
+		this.#pollCount++
+
+		const queries = [
+			sicpcommands.GetPowerStateRequest(),
+			sicpcommands.GetInputSourceRequest(),
+			sicpcommands.GetVolumeRequest(),
+			sicpcommands.GetMuteRequest(),
+		]
+		for (const query of queries) {
+			// Don't keep asking for something the display doesn't answer, but retry once in a while
+			const unanswered = this.#unansweredQueries.get(query[3]) ?? 0
+			if (unanswered >= MAX_UNANSWERED_QUERIES && this.#pollCount % UNANSWERED_QUERY_RETRY_POLLS !== 0) continue
+			void this.#send(query)
+		}
 	}
 
 	/** Send a set command, warn when the display rejects it and send the requests to refresh the state afterwards */
@@ -301,13 +320,23 @@ export class SICPClass {
 		}
 
 		const frame = await response
-		if (!frame && socket === this.#socket && socket.isConnected) this.#missedResponse()
+		if (socket !== this.#socket || !socket.isConnected) return frame
+
+		// Keep track of status requests the display doesn't answer or rejects
+		const command = request[3]
+		if (!frame || (frame[3] === CommandCode.Ack && frame[4] !== AckByte)) {
+			this.#unansweredQueries.set(command, (this.#unansweredQueries.get(command) ?? 0) + 1)
+		} else {
+			this.#unansweredQueries.delete(command)
+		}
+
+		if (!frame) this.#missedResponse()
 		return frame
 	}
 
 	#missedResponse(): void {
-		this.#missedResponses++
-		if (this.#missedResponses < MAX_MISSED_RESPONSES) return
+		// A display that answers other requests is still connected, it just doesn't support this request (in its current state)
+		if (Date.now() - this.#lastResponseAt < NO_RESPONSE_TIMEOUT) return
 
 		// The display accepted the connection but stopped answering, start over with a fresh connection
 		if (Date.now() < this.#powerSwitchingUntil) {
@@ -320,6 +349,7 @@ export class SICPClass {
 	}
 
 	#receive(data: Buffer): void {
+		this.#trace('received', data)
 		this.#receiveBuffer = Buffer.concat([this.#receiveBuffer, data])
 
 		// Every SICP message starts with its total size
@@ -334,7 +364,6 @@ export class SICPClass {
 
 			const frame = new Uint8Array(this.#receiveBuffer.subarray(0, size))
 			this.#receiveBuffer = this.#receiveBuffer.subarray(size)
-			this.#trace('received', frame)
 			this.#processFrame(frame)
 		}
 	}
@@ -350,7 +379,7 @@ export class SICPClass {
 	}
 
 	#processFrame(frame: Uint8Array): void {
-		this.#missedResponses = 0
+		this.#lastResponseAt = Date.now()
 		if (!this.#communicating) {
 			this.#communicating = true
 			if (this.#lastError !== undefined) this.#self.log('info', 'Connection to display restored')
