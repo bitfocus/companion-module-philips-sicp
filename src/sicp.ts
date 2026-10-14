@@ -76,6 +76,7 @@ export class SICPClass {
 	constructor(self: PhilipsSICPInstance, config: PhilipsSICPConfig) {
 		this.#self = self
 		this.#config = { ...config }
+		if (this.#config.debug) this.#self.log('info', 'Debug logging enabled')
 		this.#connect()
 		this.#pollTimer = setInterval(() => this.#poll(), POLL_INTERVAL)
 	}
@@ -86,6 +87,11 @@ export class SICPClass {
 
 	updateConfig(config: PhilipsSICPConfig): void {
 		const reconnect = config.host !== this.#config.host || config.port !== this.#config.port
+		// Always report the received value, so it's visible whether the setting reaches the module
+		this.#self.log(
+			'info',
+			`Configuration updated, debug logging ${config.debug ? 'enabled' : 'disabled'} (value: ${JSON.stringify(config.debug)})`,
+		)
 		this.#config = { ...config }
 		if (reconnect) {
 			this.#lastError = undefined
