@@ -4,6 +4,7 @@ import { Choices, Sources } from './sicpcommand.js'
 export enum FeedbackID {
 	PowerState = 'powerstate',
 	InputSource = 'inputsource',
+	Mute = 'mute',
 }
 
 export type FeedbacksSchema = {
@@ -16,6 +17,10 @@ export type FeedbacksSchema = {
 		options: {
 			source: string
 		}
+	}
+	[FeedbackID.Mute]: {
+		type: 'boolean'
+		options: Record<string, never>
 	}
 }
 
@@ -51,6 +56,18 @@ export function UpdateFeedbacks(self: PhilipsSICPInstance): void {
 			],
 			callback: (feedback) => {
 				return self.SICP.state.InputSource !== undefined && self.SICP.state.InputSource == feedback.options.source
+			},
+		},
+		[FeedbackID.Mute]: {
+			name: 'Muted',
+			type: 'boolean',
+			defaultStyle: {
+				bgcolor: 0xff0000,
+				color: 0xffffff,
+			},
+			options: [],
+			callback: () => {
+				return self.SICP.state.Mute === true
 			},
 		},
 	})

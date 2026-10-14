@@ -55,7 +55,7 @@ export default class PhilipsSICPInstance extends InstanceBase<ModuleSchema> {
 	/** Called by the SICP connection whenever the known display state changes */
 	stateChanged(): void {
 		if (!this.SICP) return
-		this.checkFeedbacks(FeedbackID.PowerState, FeedbackID.InputSource)
+		this.checkFeedbacks(FeedbackID.PowerState, FeedbackID.InputSource, FeedbackID.Mute)
 		UpdateVariableValues(this)
 	}
 

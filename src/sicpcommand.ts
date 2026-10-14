@@ -9,9 +9,23 @@ export const CommandCode = {
 	GetGroupID: 0x5d,
 	SetInputSource: 0xac,
 	GetInputSource: 0xad,
+	StepVolume: 0x41,
+	SetVolume: 0x44,
+	GetVolume: 0x45,
+	GetMute: 0x46,
+	SetMute: 0x47,
 } as const
 
 export const AckByte = 0x06
+
+export const VolumeStep = {
+	Down: 0x00,
+	Up: 0x01,
+	NoChange: 0x02,
+} as const
+export type VolumeStepValue = (typeof VolumeStep)[keyof typeof VolumeStep]
+
+export const MaxVolume = 100
 
 export const Sources: { choice: DropdownChoice<string>; command: number }[] = [
 	{ choice: { id: 'HDMI1', label: 'HDMI 1' }, command: 0x0d },
@@ -62,6 +76,36 @@ export function GetGroupID(): Uint8Array {
 
 export function GetInputSourceRequest(): Uint8Array {
 	return CompleteCommand([...getBase(), CommandCode.GetInputSource])
+}
+
+/**
+ * Set the volume of the speakers and audio out.
+ * Platforms without a variable audio out (Himalaya 1.x, Eagle) only take the speaker level.
+ */
+export function SetVolumeRequest(speaker: number, audioOut: number | undefined, groupID: number): Uint8Array {
+	const command = [...getBase(groupID), CommandCode.SetVolume, clampVolume(speaker)]
+	if (audioOut !== undefined) command.push(clampVolume(audioOut))
+	return CompleteCommand(command)
+}
+
+export function StepVolumeRequest(speaker: VolumeStepValue, audioOut: VolumeStepValue, groupID: number): Uint8Array {
+	return CompleteCommand([...getBase(groupID), CommandCode.StepVolume, speaker, audioOut])
+}
+
+export function GetVolumeRequest(): Uint8Array {
+	return CompleteCommand([...getBase(), CommandCode.GetVolume])
+}
+
+export function SetMuteRequest(mute: boolean, groupID: number): Uint8Array {
+	return CompleteCommand([...getBase(groupID), CommandCode.SetMute, mute ? 0x01 : 0x00])
+}
+
+export function GetMuteRequest(): Uint8Array {
+	return CompleteCommand([...getBase(), CommandCode.GetMute])
+}
+
+function clampVolume(level: number): number {
+	return Math.min(MaxVolume, Math.max(0, Math.round(level)))
 }
 
 function getBase(groupID = 0x00): number[] {

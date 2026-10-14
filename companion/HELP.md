@@ -22,6 +22,14 @@ Currently the following actions are supported.
   - Off
   - Toggle
 - Set Input Source
+- Volume Up/Down (one step, for speakers, audio out or both)
+- Set Volume (0-100%, for speakers, audio out or both)
+- Mute
+  - On
+  - Off
+  - Toggle
+
+Changing only the speakers or only the audio out with Volume Up/Down requires a recent platform (Dragon 1.6, Himalaya 2.0 or newer, or updated Dragon 1.0/1.5 firmware). Mute is part of SICP v2.01 and later; displays that don't support a command log a warning when it is used.
 
 ## Feedback
 
@@ -29,16 +37,20 @@ Currently the following feedbacks are supported.
 
 - Power
 - Input Source
+- Muted
 
 ## Variables
 
 - `power_state`: `true` when the display is powered on
 - `input_source`: id of the active input source (e.g. `HDMI1`)
 - `input_source_label`: name of the active input source (e.g. `HDMI 1`)
+- `volume`: speaker volume (0-100%)
+- `volume_audio_out`: audio out volume (0-100%), empty on displays without a variable audio out
+- `mute`: `true` when the audio is muted
 
 ## Presets
 
-Presets are available for power on/off/toggle and for selecting each input source, including feedback.
+Presets are available for power on/off/toggle, selecting each input source, volume up/down and mute, including feedback.
 
 ## Connection
 

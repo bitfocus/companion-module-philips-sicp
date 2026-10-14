@@ -12,11 +12,13 @@
 - A display that accepts the TCP connection but stops answering is now detected and the connection is re-established.
 - Changing the IP address or port in the config now reconnects to the new address.
 - Responses split over or combined in multiple TCP packets are now handled correctly.
+- Commands sent to a group (group ID other than 0) no longer wait for a reply, as the display does not send one.
 
 ### Features
 
-- Added variables for power state and active input source.
-- Added presets for power and input source selection.
+- Added volume control: volume up/down, set volume level and mute (on/off/toggle), with a mute feedback.
+- Added variables for power state, active input source, volume and mute.
+- Added presets for power, input source selection, volume and mute.
 
 ### Chores
 

@@ -18,16 +18,29 @@ const MAX_QUEUE_SIZE = 20
 
 const MAC_REGEX = /^[0-9a-fA-F]{12}$/
 
+export type VolumeOutput = 'both' | 'speaker' | 'audio_out'
+
 export interface SICPState {
 	PowerState: boolean
 	InputSource: string | undefined
+	/** Speaker volume 0-100, undefined when unknown */
+	Volume: number | undefined
+	/** Audio out volume 0-100, undefined when unknown or not supported by the display */
+	VolumeAudioOut: number | undefined
+	/** Mute state, undefined when unknown or not supported by the display */
+	Mute: boolean | undefined
+}
+
+const UnknownState: SICPState = {
+	PowerState: false,
+	InputSource: undefined,
+	Volume: undefined,
+	VolumeAudioOut: undefined,
+	Mute: undefined,
 }
 
 export class SICPClass {
-	readonly state: SICPState = {
-		PowerState: false,
-		InputSource: undefined,
-	}
+	readonly state: SICPState = { ...UnknownState }
 
 	#self: PhilipsSICPInstance
 	#config: PhilipsSICPConfig
@@ -76,11 +89,19 @@ export class SICPClass {
 			this.#wake()
 			return
 		}
-		await this.#sendAll(sicpcommands.SetPowerStateRequest(true, this.groupid), sicpcommands.GetPowerStateRequest())
+		await this.#sendCommand(
+			'power',
+			sicpcommands.SetPowerStateRequest(true, this.groupid),
+			sicpcommands.GetPowerStateRequest(),
+		)
 	}
 
 	async powerOff(): Promise<void> {
-		await this.#sendAll(sicpcommands.SetPowerStateRequest(false, this.groupid), sicpcommands.GetPowerStateRequest())
+		await this.#sendCommand(
+			'power',
+			sicpcommands.SetPowerStateRequest(false, this.groupid),
+			sicpcommands.GetPowerStateRequest(),
+		)
 	}
 
 	async togglePower(): Promise<void> {
@@ -96,7 +117,44 @@ export class SICPClass {
 			this.#self.log('warn', `Unknown input source: ${source}`)
 			return
 		}
-		await this.#sendAll(request, sicpcommands.GetInputSourceRequest())
+		await this.#sendCommand('input source', request, sicpcommands.GetInputSourceRequest())
+	}
+
+	async stepVolume(direction: 'up' | 'down', output: VolumeOutput): Promise<void> {
+		const step = direction === 'up' ? sicpcommands.VolumeStep.Up : sicpcommands.VolumeStep.Down
+		const speaker = output === 'audio_out' ? sicpcommands.VolumeStep.NoChange : step
+		const audioOut = output === 'speaker' ? sicpcommands.VolumeStep.NoChange : step
+		await this.#sendCommand(
+			'volume step',
+			sicpcommands.StepVolumeRequest(speaker, audioOut, this.groupid),
+			sicpcommands.GetVolumeRequest(),
+		)
+	}
+
+	async setVolume(level: number, output: VolumeOutput): Promise<void> {
+		// The display always sets both outputs at once, so the current level of the other output is needed
+		if (output !== 'both') await this.#send(sicpcommands.GetVolumeRequest())
+
+		const speaker = output === 'audio_out' ? this.state.Volume : level
+		const audioOut = output === 'speaker' ? this.state.VolumeAudioOut : level
+		if (speaker === undefined) {
+			this.#self.log('warn', 'Cannot set the audio out volume, the current speaker volume is unknown')
+			return
+		}
+		await this.#sendCommand(
+			'volume',
+			sicpcommands.SetVolumeRequest(speaker, audioOut, this.groupid),
+			sicpcommands.GetVolumeRequest(),
+		)
+	}
+
+	async setMute(mute: boolean): Promise<void> {
+		await this.#sendCommand('mute', sicpcommands.SetMuteRequest(mute, this.groupid), sicpcommands.GetMuteRequest())
+	}
+
+	async toggleMute(): Promise<void> {
+		await this.#send(sicpcommands.GetMuteRequest())
+		await this.setMute(!this.state.Mute)
 	}
 
 	#connect(): void {
@@ -153,7 +211,7 @@ export class SICPClass {
 
 	#connectionLost(): void {
 		this.#resetConnectionState()
-		this.#updateState({ PowerState: false, InputSource: undefined })
+		this.#updateState(UnknownState)
 	}
 
 	/**
@@ -171,10 +229,16 @@ export class SICPClass {
 		if (!this.#socket?.isConnected || this.#queue.size > 0) return
 		void this.#send(sicpcommands.GetPowerStateRequest())
 		void this.#send(sicpcommands.GetInputSourceRequest())
+		void this.#send(sicpcommands.GetVolumeRequest())
+		void this.#send(sicpcommands.GetMuteRequest())
 	}
 
-	async #sendAll(...requests: Uint8Array[]): Promise<void> {
-		await Promise.all(requests.map(async (request) => this.#send(request)))
+	/** Send a set command, warn when the display rejects it and send the requests to refresh the state afterwards */
+	async #sendCommand(name: string, request: Uint8Array, ...refresh: Uint8Array[]): Promise<void> {
+		const [response] = await Promise.all([this.#send(request), ...refresh.map(async (r) => this.#send(r))])
+		if (response && response[3] === CommandCode.Ack && response[4] !== AckByte) {
+			this.#self.log('warn', `Display rejected the ${name} command, it may not be supported by this display`)
+		}
 	}
 
 	/** Queue a request, resolves with the response of the display or undefined when there was none */
@@ -195,6 +259,16 @@ export class SICPClass {
 	async #transmit(request: Uint8Array): Promise<Uint8Array | undefined> {
 		const socket = this.#socket
 		if (!socket?.isConnected) return undefined
+
+		// The display doesn't reply to commands addressed to a group (group byte other than 0)
+		if (request[2] !== 0x00) {
+			try {
+				await socket.sendAsync(Buffer.from(request))
+			} catch (e) {
+				this.#self.log('debug', `Failed to send request: ${e instanceof Error ? e.message : String(e)}`)
+			}
+			return undefined
+		}
 
 		const response = new Promise<Uint8Array | undefined>((resolve) => {
 			const done = (frame: Uint8Array | undefined) => {
@@ -266,8 +340,13 @@ export class SICPClass {
 				this.#updateState({ InputSource: sicpcommands.Sources.find((t) => t.command === frame[4])?.choice.id })
 				break
 			}
-			case CommandCode.Ack: {
-				if (frame[4] !== AckByte) this.#self.log('debug', 'Display did not accept the last command')
+			case CommandCode.GetVolume: {
+				// Platforms without a variable audio out only report the speaker volume
+				this.#updateState({ Volume: frame[4], VolumeAudioOut: frame[0] >= 7 ? frame[5] : undefined })
+				break
+			}
+			case CommandCode.GetMute: {
+				this.#updateState({ Mute: frame[4] === 0x01 })
 				break
 			}
 			case CommandCode.GetGroupID: {
